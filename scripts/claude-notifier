@@ -27,11 +27,25 @@ format_duration() {
     fi
 }
 
+# Sanitize string for use in osascript (escape quotes and backslashes)
+sanitize_for_osascript() {
+    local str="$1"
+    # Escape backslashes first, then double quotes
+    str="${str//\\/\\\\}"
+    str="${str//\"/\\\"}"
+    echo "$str"
+}
+
 # Send notification using osascript (most reliable on macOS)
 send_notification() {
     local title="$1"
     local message="$2"
     local sound="$3"
+
+    # Sanitize inputs to prevent command injection
+    title=$(sanitize_for_osascript "$title")
+    message=$(sanitize_for_osascript "$message")
+    sound=$(sanitize_for_osascript "$sound")
 
     osascript -e "display notification \"$message\" with title \"$title\" sound name \"$sound\"" 2>/dev/null
 }
@@ -140,6 +154,17 @@ check_needs_input() {
         echo "complete"
         return
     fi
+
+    # Security: Only allow reading from Claude's data directory
+    case "$transcript_path" in
+        "$HOME/.claude/"*|"/tmp/"*)
+            # Allowed paths
+            ;;
+        *)
+            echo "complete"
+            return
+            ;;
+    esac
 
     # Get the last assistant message from the transcript
     # The transcript is JSONL format, we look for the last assistant message
