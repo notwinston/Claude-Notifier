@@ -1,0 +1,34 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Editor/IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Backup files
+*.backup
+*.bak
+
+# Build artifacts
+build/
+dist/
+*.app
+
+# Runtime/User data (stored in ~/.claude-notifier/)
+sessions/
+*.json.tmp
+
+# Logs
+*.log
+
+# Original source images (keep converted assets)
+*.webp
+
+# Planning docs (internal only)
+PLAN.md

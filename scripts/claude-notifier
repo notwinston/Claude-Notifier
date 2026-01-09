@@ -1,0 +1,322 @@
+#!/bin/bash
+
+# Claude Notifier - Terminal-based notification tool for Claude Code
+# Sends macOS notifications when Claude finishes responding
+# Differentiates between "complete" and "needs input" states
+
+CONFIG_DIR="$HOME/.claude-notifier"
+SESSIONS_DIR="$CONFIG_DIR/sessions"
+GLOBAL_ENABLED="$CONFIG_DIR/enabled"
+ICON_PATH="$CONFIG_DIR/icon.png"
+SOUND_COMPLETE="Glass"
+SOUND_INPUT="Blow"
+
+# Send notification using osascript (most reliable on macOS)
+send_notification() {
+    local title="$1"
+    local message="$2"
+    local sound="$3"
+
+    osascript -e "display notification \"$message\" with title \"$title\" sound name \"$sound\"" 2>/dev/null
+}
+
+# Get session ID from Claude Code environment or generate one
+get_session_id() {
+    if [ -n "$CLAUDE_SESSION_ID" ]; then
+        echo "$CLAUDE_SESSION_ID"
+    elif [ -n "$TERM_SESSION_ID" ]; then
+        # macOS Terminal.app session ID
+        echo "$TERM_SESSION_ID" | md5 | cut -c1-8
+    elif [ -n "$ITERM_SESSION_ID" ]; then
+        # iTerm2 session ID
+        echo "$ITERM_SESSION_ID" | md5 | cut -c1-8
+    elif [ -n "$PPID" ]; then
+        # Use parent process ID (unique per terminal)
+        echo "ppid-$PPID"
+    else
+        echo "default"
+    fi
+}
+
+SESSION_ID=$(get_session_id)
+SESSION_FILE="$SESSIONS_DIR/$SESSION_ID.json"
+
+# Emoji options stored as: emoji|name|description
+EMOJI_1="🤖|Robot|Classic AI/bot indicator"
+EMOJI_2="🔔|Bell|Traditional notification"
+EMOJI_3="✨|Sparkles|Something magical happened"
+EMOJI_4="🚀|Rocket|Fast/launched task complete"
+EMOJI_5="🧠|Brain|Thinking complete"
+EMOJI_6="💻|Computer|Code/terminal work done"
+
+get_emoji_data() {
+    case "$1" in
+        1) echo "$EMOJI_1" ;;
+        2) echo "$EMOJI_2" ;;
+        3) echo "$EMOJI_3" ;;
+        4) echo "$EMOJI_4" ;;
+        5) echo "$EMOJI_5" ;;
+        6) echo "$EMOJI_6" ;;
+    esac
+}
+
+init() {
+    mkdir -p "$SESSIONS_DIR"
+
+    # Check if this session already has an emoji assigned
+    if [ -f "$SESSION_FILE" ]; then
+        EMOJI=$(grep -o '"emoji": *"[^"]*"' "$SESSION_FILE" | cut -d'"' -f4)
+        NAME=$(grep -o '"name": *"[^"]*"' "$SESSION_FILE" | cut -d'"' -f4)
+        echo ""
+        echo "✓ Session already configured: $EMOJI ($NAME)"
+        echo ""
+        return
+    fi
+
+    # Count existing sessions to pick next emoji (cycle through 1-6)
+    local session_count
+    session_count=$(ls -1 "$SESSIONS_DIR"/*.json 2>/dev/null | wc -l | tr -d ' ')
+
+    # Cycle through emojis 1-6
+    local emoji_index=$(( (session_count % 6) + 1 ))
+
+    data=$(get_emoji_data "$emoji_index")
+    emoji=$(echo "$data" | cut -d'|' -f1)
+    name=$(echo "$data" | cut -d'|' -f2)
+
+    echo "{\"emoji\": \"$emoji\", \"name\": \"$name\", \"enabled\": true}" > "$SESSION_FILE"
+
+    echo ""
+    echo "╔════════════════════════════════════════════╗"
+    echo "║         Claude Notifier                    ║"
+    echo "╠════════════════════════════════════════════╣"
+    printf "║  Session assigned: %s  %-18s  ║\n" "$emoji" "$name"
+    echo "╚════════════════════════════════════════════╝"
+    echo ""
+}
+
+# Determine if Claude needs user input based on transcript
+check_needs_input() {
+    local transcript_path="$1"
+
+    if [ -z "$transcript_path" ] || [ ! -f "$transcript_path" ]; then
+        echo "complete"
+        return
+    fi
+
+    # Get the last assistant message from the transcript
+    # The transcript is JSONL format, we look for the last assistant message
+    local last_content
+    last_content=$(tail -20 "$transcript_path" 2>/dev/null | grep -o '"type":"assistant"' | tail -1)
+
+    if [ -z "$last_content" ]; then
+        echo "complete"
+        return
+    fi
+
+    # Check the last few lines for patterns indicating need for input
+    local last_lines
+    last_lines=$(tail -5 "$transcript_path" 2>/dev/null)
+
+    # Patterns that indicate Claude needs user input/review/permissions
+    if echo "$last_lines" | grep -qiE '"tool_name":|"type":"tool_use"|AskUserQuestion|permission|approve|confirm'; then
+        echo "input"
+        return
+    fi
+
+    # Check for question patterns in the content
+    if echo "$last_lines" | grep -qiE 'would you like|do you want|should I|shall I|let me know|please confirm|waiting for|need your|require.*input|require.*approval'; then
+        echo "input"
+        return
+    fi
+
+    echo "complete"
+}
+
+notify() {
+    # Read hook input from stdin (JSON from Claude Code)
+    local hook_input=""
+    if [ ! -t 0 ]; then
+        hook_input=$(cat)
+    fi
+
+    # Check global enabled state
+    if [ -f "$GLOBAL_ENABLED" ]; then
+        GLOBAL=$(cat "$GLOBAL_ENABLED")
+        if [ "$GLOBAL" != "true" ]; then
+            exit 0
+        fi
+    fi
+
+    # Check session config
+    if [ ! -f "$SESSION_FILE" ]; then
+        # No config = default enabled with robot emoji
+        EMOJI="🤖"
+        ENABLED="true"
+    else
+        # Parse JSON config (simple grep-based parsing)
+        ENABLED=$(grep -o '"enabled": *[^,}]*' "$SESSION_FILE" | cut -d':' -f2 | tr -d ' ')
+        EMOJI=$(grep -o '"emoji": *"[^"]*"' "$SESSION_FILE" | cut -d'"' -f4)
+    fi
+
+    if [ "$ENABLED" != "true" ]; then
+        exit 0
+    fi
+
+    # Extract transcript path and working directory from hook input
+    local transcript_path=""
+    local project_name=""
+    if [ -n "$hook_input" ]; then
+        transcript_path=$(echo "$hook_input" | grep -o '"transcript_path": *"[^"]*"' | cut -d'"' -f4)
+        # Expand ~ to home directory
+        transcript_path="${transcript_path/#\~/$HOME}"
+
+        # Extract project name from cwd or transcript path
+        local cwd=$(echo "$hook_input" | grep -o '"cwd": *"[^"]*"' | cut -d'"' -f4)
+        if [ -n "$cwd" ]; then
+            project_name=$(basename "$cwd")
+        elif [ -n "$transcript_path" ]; then
+            # Try to get project name from transcript path (usually contains project name)
+            project_name=$(echo "$transcript_path" | grep -oE '/projects/[^/]+/' | sed 's/\/projects\///' | sed 's/\///')
+        fi
+    fi
+
+    # Fallback to current directory name
+    if [ -z "$project_name" ]; then
+        project_name=$(basename "$(pwd)")
+    fi
+
+    # Determine notification type
+    local status
+    status=$(check_needs_input "$transcript_path")
+
+    local title message sound
+    if [ "$status" = "input" ]; then
+        title="$EMOJI $project_name - Input Needed"
+        message="$EMOJI Claude is waiting for your review or input"
+        sound="$SOUND_INPUT"
+    else
+        title="$EMOJI $project_name - Complete"
+        message="$EMOJI Claude has finished the task"
+        sound="$SOUND_COMPLETE"
+    fi
+
+    # Send notification
+    send_notification "$title" "$message" "$sound"
+}
+
+# Test notification with specific type
+notify_test() {
+    local type="${1:-complete}"
+
+    # Check session config for emoji
+    if [ ! -f "$SESSION_FILE" ]; then
+        EMOJI="🤖"
+    else
+        EMOJI=$(grep -o '"emoji": *"[^"]*"' "$SESSION_FILE" | cut -d'"' -f4)
+    fi
+
+    # Get project name from current directory
+    local project_name
+    project_name=$(basename "$(pwd)")
+
+    local title message sound
+    if [ "$type" = "input" ]; then
+        title="$EMOJI $project_name - Input Needed"
+        message="$EMOJI Claude is waiting for your review or input"
+        sound="$SOUND_INPUT"
+    else
+        title="$EMOJI $project_name - Complete"
+        message="$EMOJI Claude has finished the task"
+        sound="$SOUND_COMPLETE"
+    fi
+
+    send_notification "$title" "$message" "$sound"
+    echo "✓ Sent '$type' notification"
+}
+
+status() {
+    echo ""
+    echo "Claude Notifier Status"
+    echo "══════════════════════"
+    echo ""
+    echo "Session ID: $SESSION_ID"
+
+    if [ -f "$SESSION_FILE" ]; then
+        ENABLED=$(grep -o '"enabled": *[^,}]*' "$SESSION_FILE" | cut -d':' -f2 | tr -d ' ')
+        EMOJI=$(grep -o '"emoji": *"[^"]*"' "$SESSION_FILE" | cut -d'"' -f4)
+        NAME=$(grep -o '"name": *"[^"]*"' "$SESSION_FILE" | cut -d'"' -f4)
+        echo "Emoji: $EMOJI ($NAME)"
+        echo "Enabled: $ENABLED"
+    else
+        echo "No session config (using defaults)"
+        echo "Emoji: 🤖 (Robot)"
+        echo "Enabled: true"
+    fi
+
+    echo ""
+    echo "Notification Types:"
+    echo "  ✅ Complete - Task finished (sound: $SOUND_COMPLETE)"
+    echo "  ⏳ Input    - Needs review/input (sound: $SOUND_INPUT)"
+
+    echo ""
+    if [ -f "$GLOBAL_ENABLED" ]; then
+        echo "Global: $(cat "$GLOBAL_ENABLED")"
+    else
+        echo "Global: true (default)"
+    fi
+    echo ""
+}
+
+enable() {
+    mkdir -p "$CONFIG_DIR"
+    echo "true" > "$GLOBAL_ENABLED"
+    echo "✓ Notifications enabled globally"
+}
+
+disable() {
+    mkdir -p "$CONFIG_DIR"
+    echo "false" > "$GLOBAL_ENABLED"
+    echo "✓ Notifications disabled globally"
+}
+
+case "$1" in
+    init)
+        init
+        ;;
+    notify)
+        notify
+        ;;
+    test)
+        notify_test "${2:-complete}"
+        ;;
+    status)
+        status
+        ;;
+    enable)
+        enable
+        ;;
+    disable)
+        disable
+        ;;
+    *)
+        echo ""
+        echo "Claude Notifier - macOS notifications for Claude Code"
+        echo ""
+        echo "Usage: claude-notifier <command>"
+        echo ""
+        echo "Commands:"
+        echo "  init           Interactive emoji picker for this session"
+        echo "  notify         Send a notification (called by Stop hook)"
+        echo "  test [type]    Test notification (type: complete|input)"
+        echo "  status         Show current session configuration"
+        echo "  enable         Enable notifications globally"
+        echo "  disable        Disable notifications globally"
+        echo ""
+        echo "Notification Types:"
+        echo "  complete  -  Task finished successfully"
+        echo "  input     -  Claude needs review/permissions/input"
+        echo ""
+        exit 1
+        ;;
+esac
