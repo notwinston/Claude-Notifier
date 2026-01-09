@@ -11,6 +11,22 @@ ICON_PATH="$CONFIG_DIR/icon.png"
 SOUND_COMPLETE="Glass"
 SOUND_INPUT="Blow"
 
+# Format seconds into human readable duration (e.g., "2m 30s")
+format_duration() {
+    local seconds=$1
+    local hours=$((seconds / 3600))
+    local minutes=$(((seconds % 3600) / 60))
+    local secs=$((seconds % 60))
+
+    if [ $hours -gt 0 ]; then
+        echo "${hours}h ${minutes}m ${secs}s"
+    elif [ $minutes -gt 0 ]; then
+        echo "${minutes}m ${secs}s"
+    else
+        echo "${secs}s"
+    fi
+}
+
 # Send notification using osascript (most reliable on macOS)
 send_notification() {
     local title="$1"
@@ -40,6 +56,7 @@ get_session_id() {
 
 SESSION_ID=$(get_session_id)
 SESSION_FILE="$SESSIONS_DIR/$SESSION_ID.json"
+START_TIME_FILE="$SESSIONS_DIR/$SESSION_ID.start"
 
 # Emoji options stored as: emoji|name|description
 EMOJI_1="🤖|Robot|Classic AI/bot indicator"
@@ -93,6 +110,26 @@ init() {
     printf "║  Session assigned: %s  %-18s  ║\n" "$emoji" "$name"
     echo "╚════════════════════════════════════════════╝"
     echo ""
+}
+
+# Record start time when user submits a prompt
+start() {
+    mkdir -p "$SESSIONS_DIR"
+    date +%s > "$START_TIME_FILE"
+}
+
+# Get duration since start (returns formatted string or empty if no start time)
+get_duration() {
+    if [ -f "$START_TIME_FILE" ]; then
+        local start_time=$(cat "$START_TIME_FILE")
+        local end_time=$(date +%s)
+        local duration=$((end_time - start_time))
+
+        # Only show duration if it's reasonable (< 24 hours)
+        if [ $duration -gt 0 ] && [ $duration -lt 86400 ]; then
+            format_duration $duration
+        fi
+    fi
 }
 
 # Determine if Claude needs user input based on transcript
@@ -190,19 +227,30 @@ notify() {
     local status
     status=$(check_needs_input "$transcript_path")
 
+    # Get duration
+    local duration
+    duration=$(get_duration)
+    local duration_text=""
+    if [ -n "$duration" ]; then
+        duration_text=" ($duration)"
+    fi
+
     local title message sound
     if [ "$status" = "input" ]; then
         title="$EMOJI $project_name - Input Needed"
-        message="$EMOJI Claude is waiting for your review or input"
+        message="$EMOJI Claude is waiting for your review or input$duration_text"
         sound="$SOUND_INPUT"
     else
-        title="$EMOJI $project_name - Complete"
+        title="$EMOJI $project_name - Complete$duration_text"
         message="$EMOJI Claude has finished the task"
         sound="$SOUND_COMPLETE"
     fi
 
     # Send notification
     send_notification "$title" "$message" "$sound"
+
+    # Clear start time for next task
+    rm -f "$START_TIME_FILE"
 }
 
 # Test notification with specific type
@@ -220,13 +268,21 @@ notify_test() {
     local project_name
     project_name=$(basename "$(pwd)")
 
+    # Get duration if start was called
+    local duration
+    duration=$(get_duration)
+    local duration_text=""
+    if [ -n "$duration" ]; then
+        duration_text=" ($duration)"
+    fi
+
     local title message sound
     if [ "$type" = "input" ]; then
         title="$EMOJI $project_name - Input Needed"
-        message="$EMOJI Claude is waiting for your review or input"
+        message="$EMOJI Claude is waiting for your review or input$duration_text"
         sound="$SOUND_INPUT"
     else
-        title="$EMOJI $project_name - Complete"
+        title="$EMOJI $project_name - Complete$duration_text"
         message="$EMOJI Claude has finished the task"
         sound="$SOUND_COMPLETE"
     fi
@@ -284,6 +340,9 @@ case "$1" in
     init)
         init
         ;;
+    start)
+        start
+        ;;
     notify)
         notify
         ;;
@@ -306,8 +365,9 @@ case "$1" in
         echo "Usage: claude-notifier <command>"
         echo ""
         echo "Commands:"
-        echo "  init           Interactive emoji picker for this session"
-        echo "  notify         Send a notification (called by Stop hook)"
+        echo "  init           Assign emoji for this session (SessionStart hook)"
+        echo "  start          Record start time (UserPromptSubmit hook)"
+        echo "  notify         Send notification with duration (Stop hook)"
         echo "  test [type]    Test notification (type: complete|input)"
         echo "  status         Show current session configuration"
         echo "  enable         Enable notifications globally"

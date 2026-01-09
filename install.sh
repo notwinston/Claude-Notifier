@@ -46,7 +46,7 @@ fi
 if command -v jq &> /dev/null; then
     if [ -f "$CLAUDE_SETTINGS" ] && [ -s "$CLAUDE_SETTINGS" ]; then
         # Merge with existing settings
-        jq '.hooks.SessionStart = [{"hooks": [{"type": "command", "command": "/usr/local/bin/claude-notifier init"}]}] | .hooks.Stop = [{"hooks": [{"type": "command", "command": "/usr/local/bin/claude-notifier notify"}]}]' "$CLAUDE_SETTINGS" > "$CLAUDE_SETTINGS.tmp"
+        jq '.hooks.SessionStart = [{"hooks": [{"type": "command", "command": "/usr/local/bin/claude-notifier init"}]}] | .hooks.UserPromptSubmit = [{"hooks": [{"type": "command", "command": "/usr/local/bin/claude-notifier start"}]}] | .hooks.Stop = [{"hooks": [{"type": "command", "command": "/usr/local/bin/claude-notifier notify"}]}]' "$CLAUDE_SETTINGS" > "$CLAUDE_SETTINGS.tmp"
         mv "$CLAUDE_SETTINGS.tmp" "$CLAUDE_SETTINGS"
     else
         # Create new settings file
@@ -59,6 +59,16 @@ if command -v jq &> /dev/null; then
           {
             "type": "command",
             "command": "/usr/local/bin/claude-notifier init"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/claude-notifier start"
           }
         ]
       }
@@ -91,6 +101,16 @@ else
           {
             "type": "command",
             "command": "/usr/local/bin/claude-notifier init"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/claude-notifier start"
           }
         ]
       }
