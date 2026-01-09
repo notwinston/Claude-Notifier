@@ -1,6 +1,6 @@
 # Claude Notifier
 
-macOS notification system for Claude Code. Get notified when Claude finishes a task or needs your input.
+Simple macOS notification system for Claude Code. Get notified when Claude finishes a task or needs your input.
 
 ## Features
 
