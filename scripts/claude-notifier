@@ -10,6 +10,7 @@ GLOBAL_ENABLED="$CONFIG_DIR/enabled"
 ICON_PATH="$CONFIG_DIR/icon.png"
 SOUND_COMPLETE="Glass"
 SOUND_INPUT="Blow"
+SOUND_PERMISSION="Submarine"
 
 # Format seconds into human readable duration (e.g., "2m 30s")
 format_duration() {
@@ -278,6 +279,65 @@ notify() {
     rm -f "$START_TIME_FILE"
 }
 
+# Send notification when Claude requests tool permission (PreToolUse hook)
+permission() {
+    # Read hook input from stdin (JSON from Claude Code)
+    local hook_input=""
+    if [ ! -t 0 ]; then
+        hook_input=$(cat)
+    fi
+
+    # Check global enabled state
+    if [ -f "$GLOBAL_ENABLED" ]; then
+        GLOBAL=$(cat "$GLOBAL_ENABLED")
+        if [ "$GLOBAL" != "true" ]; then
+            exit 0
+        fi
+    fi
+
+    # Check session config
+    if [ ! -f "$SESSION_FILE" ]; then
+        EMOJI="🤖"
+        ENABLED="true"
+    else
+        ENABLED=$(grep -o '"enabled": *[^,}]*' "$SESSION_FILE" | cut -d':' -f2 | tr -d ' ')
+        EMOJI=$(grep -o '"emoji": *"[^"]*"' "$SESSION_FILE" | cut -d'"' -f4)
+    fi
+
+    if [ "$ENABLED" != "true" ]; then
+        exit 0
+    fi
+
+    # Extract tool name and working directory from hook input
+    local tool_name="Tool"
+    local project_name=""
+    if [ -n "$hook_input" ]; then
+        # Extract tool_name from hook input
+        local extracted_tool
+        extracted_tool=$(echo "$hook_input" | grep -o '"tool_name": *"[^"]*"' | cut -d'"' -f4)
+        if [ -n "$extracted_tool" ]; then
+            tool_name="$extracted_tool"
+        fi
+
+        # Extract project name from cwd
+        local cwd=$(echo "$hook_input" | grep -o '"cwd": *"[^"]*"' | cut -d'"' -f4)
+        if [ -n "$cwd" ]; then
+            project_name=$(basename "$cwd")
+        fi
+    fi
+
+    # Fallback to current directory name
+    if [ -z "$project_name" ]; then
+        project_name=$(basename "$(pwd)")
+    fi
+
+    local title message
+    title="$EMOJI $project_name - Permission"
+    message="$EMOJI Claude wants to use: $tool_name"
+
+    send_notification "$title" "$message" "$SOUND_PERMISSION"
+}
+
 # Test notification with specific type
 notify_test() {
     local type="${1:-complete}"
@@ -306,6 +366,10 @@ notify_test() {
         title="$EMOJI $project_name - Input Needed"
         message="$EMOJI Claude is waiting for your review or input$duration_text"
         sound="$SOUND_INPUT"
+    elif [ "$type" = "permission" ]; then
+        title="$EMOJI $project_name - Permission"
+        message="$EMOJI Claude wants to use: Bash (test)"
+        sound="$SOUND_PERMISSION"
     else
         title="$EMOJI $project_name - Complete$duration_text"
         message="$EMOJI Claude has finished the task"
@@ -337,8 +401,9 @@ status() {
 
     echo ""
     echo "Notification Types:"
-    echo "  ✅ Complete - Task finished (sound: $SOUND_COMPLETE)"
-    echo "  ⏳ Input    - Needs review/input (sound: $SOUND_INPUT)"
+    echo "  ✅ Complete   - Task finished (sound: $SOUND_COMPLETE)"
+    echo "  ⏳ Input      - Needs review/input (sound: $SOUND_INPUT)"
+    echo "  🔐 Permission - Tool permission request (sound: $SOUND_PERMISSION)"
 
     echo ""
     if [ -f "$GLOBAL_ENABLED" ]; then
@@ -371,6 +436,9 @@ case "$1" in
     notify)
         notify
         ;;
+    permission)
+        permission
+        ;;
     test)
         notify_test "${2:-complete}"
         ;;
@@ -393,14 +461,16 @@ case "$1" in
         echo "  init           Assign emoji for this session (SessionStart hook)"
         echo "  start          Record start time (UserPromptSubmit hook)"
         echo "  notify         Send notification with duration (Stop hook)"
-        echo "  test [type]    Test notification (type: complete|input)"
+        echo "  permission     Send permission notification (PreToolUse hook)"
+        echo "  test [type]    Test notification (type: complete|input|permission)"
         echo "  status         Show current session configuration"
         echo "  enable         Enable notifications globally"
         echo "  disable        Disable notifications globally"
         echo ""
         echo "Notification Types:"
-        echo "  complete  -  Task finished successfully"
-        echo "  input     -  Claude needs review/permissions/input"
+        echo "  complete    -  Task finished successfully"
+        echo "  input       -  Claude needs review/input"
+        echo "  permission  -  Claude requests tool permission"
         echo ""
         exit 1
         ;;
