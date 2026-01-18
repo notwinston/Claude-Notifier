@@ -279,12 +279,43 @@ notify() {
     rm -f "$START_TIME_FILE"
 }
 
+# Tools that are typically auto-allowed and don't require user permission
+# These tools are read-only or don't make changes that need approval
+AUTO_ALLOWED_TOOLS="Read Glob Grep WebFetch WebSearch Task TaskOutput TodoWrite AskUserQuestion Skill"
+
+# Check if a tool is auto-allowed (doesn't require user permission)
+is_auto_allowed_tool() {
+    local tool="$1"
+    for auto_tool in $AUTO_ALLOWED_TOOLS; do
+        if [ "$tool" = "$auto_tool" ]; then
+            return 0  # true - is auto-allowed
+        fi
+    done
+    return 1  # false - requires permission
+}
+
 # Send notification when Claude requests tool permission (PreToolUse hook)
+# Only notifies for tools that actually require user input
 permission() {
     # Read hook input from stdin (JSON from Claude Code)
     local hook_input=""
     if [ ! -t 0 ]; then
         hook_input=$(cat)
+    fi
+
+    # Extract tool name first to check if notification is needed
+    local tool_name="Tool"
+    if [ -n "$hook_input" ]; then
+        local extracted_tool
+        extracted_tool=$(echo "$hook_input" | grep -o '"tool_name": *"[^"]*"' | cut -d'"' -f4)
+        if [ -n "$extracted_tool" ]; then
+            tool_name="$extracted_tool"
+        fi
+    fi
+
+    # Skip notification for auto-allowed tools (they don't need user permission)
+    if is_auto_allowed_tool "$tool_name"; then
+        exit 0
     fi
 
     # Check global enabled state
@@ -308,18 +339,9 @@ permission() {
         exit 0
     fi
 
-    # Extract tool name and working directory from hook input
-    local tool_name="Tool"
+    # Extract project name from cwd
     local project_name=""
     if [ -n "$hook_input" ]; then
-        # Extract tool_name from hook input
-        local extracted_tool
-        extracted_tool=$(echo "$hook_input" | grep -o '"tool_name": *"[^"]*"' | cut -d'"' -f4)
-        if [ -n "$extracted_tool" ]; then
-            tool_name="$extracted_tool"
-        fi
-
-        # Extract project name from cwd
         local cwd=$(echo "$hook_input" | grep -o '"cwd": *"[^"]*"' | cut -d'"' -f4)
         if [ -n "$cwd" ]; then
             project_name=$(basename "$cwd")
@@ -404,6 +426,12 @@ status() {
     echo "  ✅ Complete   - Task finished (sound: $SOUND_COMPLETE)"
     echo "  ⏳ Input      - Needs review/input (sound: $SOUND_INPUT)"
     echo "  🔐 Permission - Tool permission request (sound: $SOUND_PERMISSION)"
+    echo ""
+    echo "Auto-allowed tools (no permission notification):"
+    echo "  $AUTO_ALLOWED_TOOLS"
+    echo ""
+    echo "Tools requiring permission (will notify):"
+    echo "  Bash, Write, Edit, NotebookEdit, KillShell"
 
     echo ""
     if [ -f "$GLOBAL_ENABLED" ]; then
